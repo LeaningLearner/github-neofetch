@@ -116,3 +116,31 @@ test("an accessible error can be retried immediately", async ({ page }) => {
   await expect(page.locator(".terminal")).toBeVisible();
   expect(requests).toBe(2);
 });
+
+test("share falls back to the clipboard when native sharing fails", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "share", {
+      configurable: true,
+      value: async () => { throw new Error("native share unavailable"); }
+    });
+    Object.defineProperty(navigator, "canShare", { configurable: true, value: () => true });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => localStorage.setItem("e2e-copied-share-url", value)
+      }
+    });
+  });
+  await page.route("**/api/github/**", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fixture("standard")) });
+  });
+
+  await page.goto("/?user=torvalds");
+  await expect(page.locator(".terminal")).toBeVisible();
+  await page.getByTitle("分享").click();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("e2e-copied-share-url"))).toMatch(/\/u\/torvalds$/);
+  await expect(page.getByTitle("分享链接已复制")).toBeVisible();
+  expect(pageErrors).toEqual([]);
+});

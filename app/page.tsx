@@ -24,7 +24,9 @@ const translations = {
     finalizing: "正在整理终端资料卡...",
     retry: "重试",
     share: "分享",
-    shared: "已复制分享链接",
+    shared: "分享成功",
+    shareCopied: "分享链接已复制",
+    shareFailed: "分享失败，请手动复制地址",
     searchHint: "输入 GitHub 用户名；可使用上下方向键选择最近查询。",
     recent: "最近",
     clearRecent: "清空最近查询",
@@ -96,7 +98,9 @@ const translations = {
     finalizing: "Finalizing the terminal profile...",
     retry: "Retry",
     share: "Share",
-    shared: "Share link copied",
+    shared: "Shared",
+    shareCopied: "Share link copied",
+    shareFailed: "Unable to share; copy the address manually",
     searchHint: "Enter a GitHub username; use the arrow keys to browse recent searches.",
     recent: "Recent",
     clearRecent: "Clear recent searches",
@@ -227,6 +231,28 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
+async function copyToClipboard(value: string) {
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    const textarea = document.createElement("textarea");
+    try {
+      textarea.value = value;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      return typeof document.execCommand === "function" && document.execCommand("copy");
+    } catch {
+      return false;
+    } finally {
+      textarea.remove();
+    }
+  }
+}
+
 export default function Home() {
   const [username, setUsername] = useState("");
   const [data, setData] = useState<ProfileData | null>(null);
@@ -235,7 +261,7 @@ export default function Home() {
   const [recent, setRecent] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [copied, setCopied] = useState(false);
-  const [shared, setShared] = useState(false);
+  const [shareFeedback, setShareFeedback] = useState<"idle" | "shared" | "copied" | "failed">("idle");
   const [exporting, setExporting] = useState(false);
   const [loadingStage, setLoadingStage] = useState<LoadingStage>("profile");
   const [loadingRepoCount, setLoadingRepoCount] = useState<number | null>(null);
@@ -301,7 +327,7 @@ export default function Home() {
     setLoadingRepoCount(null);
     setErrorCode(null);
     setCopied(false);
-    setShared(false);
+    setShareFeedback("idle");
     setData((current) => current?.profile.login.toLowerCase() === clean.toLowerCase() ? current : null);
 
     try {
@@ -415,14 +441,28 @@ export default function Home() {
       text: `${data.profile.login} GitHub terminal profile`,
       url: shareUrl.toString()
     };
-    try {
-      if (navigator.share) await navigator.share(shareData);
-      else await navigator.clipboard.writeText(shareData.url);
-      setShared(true);
-      window.setTimeout(() => setShared(false), 1800);
-    } catch (reason) {
-      if (!(reason instanceof DOMException && reason.name === "AbortError")) throw reason;
+    let canUseNativeShare = typeof navigator.share === "function";
+    if (canUseNativeShare && navigator.canShare) {
+      try {
+        canUseNativeShare = navigator.canShare(shareData);
+      } catch {
+        canUseNativeShare = false;
+      }
     }
+    if (canUseNativeShare) {
+      try {
+        await navigator.share(shareData);
+        setShareFeedback("shared");
+        window.setTimeout(() => setShareFeedback("idle"), 1800);
+        return;
+      } catch (reason) {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+      }
+    }
+
+    const copied = await copyToClipboard(shareData.url);
+    setShareFeedback(copied ? "copied" : "failed");
+    if (copied) window.setTimeout(() => setShareFeedback("idle"), 1800);
   }
 
   function downloadText() {
@@ -525,7 +565,15 @@ export default function Home() {
               <span>{data.profile.login} — github-neofetch</span>
               <div className="terminalActions" data-export-hide="true">
                 <button type="button" onClick={copyResult} title={copied ? t.copied : t.copy}>{copied ? <Check size={13} /> : <Copy size={13} />}<span>{copied ? t.copied : t.copy}</span></button>
-                <button type="button" onClick={shareResult} title={shared ? t.shared : t.share}>{shared ? <Check size={13} /> : <Share2 size={13} />}<span>{shared ? t.shared : t.share}</span></button>
+                <button
+                  type="button"
+                  onClick={shareResult}
+                  title={shareFeedback === "shared" ? t.shared : shareFeedback === "copied" ? t.shareCopied : shareFeedback === "failed" ? t.shareFailed : t.share}
+                  aria-label={shareFeedback === "shared" ? t.shared : shareFeedback === "copied" ? t.shareCopied : shareFeedback === "failed" ? t.shareFailed : t.share}
+                >
+                  {shareFeedback === "shared" || shareFeedback === "copied" ? <Check size={13} /> : <Share2 size={13} />}
+                  <span aria-live="polite">{shareFeedback === "shared" ? t.shared : shareFeedback === "copied" ? t.shareCopied : shareFeedback === "failed" ? t.shareFailed : t.share}</span>
+                </button>
                 <button type="button" onClick={downloadText} title={t.downloadTxt}><FileText size={13} /><span>TXT</span></button>
                 <button type="button" onClick={downloadImage} disabled={exporting} title={t.downloadPng}><Download size={13} /><span>{exporting ? t.exporting : "PNG"}</span></button>
               </div>
