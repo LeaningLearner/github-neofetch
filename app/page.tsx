@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, KeyboardEvent, ReactNode, useEffect, useRef, useState } from "react";
-import { toPng } from "html-to-image";
+import { toBlob } from "html-to-image";
 import { Check, Copy, Download, FileText, Moon, Share2, Sun, TerminalSquare, Trash2 } from "lucide-react";
 import type { Density, LoadingStage, Locale, NoteCode, ProfileData, ProfileStreamEvent, Theme } from "./types";
 
@@ -227,8 +227,10 @@ function downloadBlob(blob: Blob, filename: string) {
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = filename;
+  document.body.appendChild(anchor);
   anchor.click();
-  URL.revokeObjectURL(url);
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 async function copyToClipboard(value: string) {
@@ -475,13 +477,13 @@ export default function Home() {
     setExporting(true);
     try {
       const background = getComputedStyle(terminalRef.current).backgroundColor;
-      const dataUrl = await toPng(terminalRef.current, {
+      const blob = await toBlob(terminalRef.current, {
         cacheBust: true,
         pixelRatio: 2,
         backgroundColor: background,
         filter: (node) => !(node instanceof HTMLElement && node.dataset.exportHide === "true")
       });
-      const blob = await (await fetch(dataUrl)).blob();
+      if (!blob) throw new Error("PNG export returned an empty image");
       downloadBlob(blob, `${data.profile.login}-github-neofetch.png`);
     } finally {
       setExporting(false);

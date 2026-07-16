@@ -95,6 +95,30 @@ test("shared profile exposes social metadata and opens the interactive result", 
   await expect(page.locator(".terminal")).toBeVisible();
 });
 
+test("profile card can be downloaded as a PNG under the site CSP", async ({ page }) => {
+  await page.route("**/api/github/**", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fixture("standard")) });
+  });
+
+  await page.goto("/?user=torvalds");
+  await expect(page.locator(".terminal")).toBeVisible();
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "PNG", exact: true }).click();
+  const download = await downloadPromise;
+
+  expect(download.suggestedFilename()).toBe("torvalds-github-neofetch.png");
+  const file = await download.createReadStream();
+  const signature = await new Promise<Buffer>((resolve, reject) => {
+    file.once("error", reject);
+    file.once("data", (chunk: Buffer) => {
+      file.destroy();
+      resolve(chunk.subarray(0, 8));
+    });
+  });
+  expect(signature).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+});
+
 test("an accessible error can be retried immediately", async ({ page }) => {
   let requests = 0;
   await page.route("**/api/github/**", async (route) => {
