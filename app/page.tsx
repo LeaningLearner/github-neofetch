@@ -2,8 +2,8 @@
 
 import { FormEvent, KeyboardEvent, ReactNode, useEffect, useRef, useState } from "react";
 import { toPng } from "html-to-image";
-import { Check, Copy, Download, FileText, Moon, Sun, TerminalSquare, Trash2 } from "lucide-react";
-import type { Density, Locale, NoteCode, ProfileData, Theme } from "./types";
+import { Check, Copy, Download, FileText, Moon, Share2, Sun, TerminalSquare, Trash2 } from "lucide-react";
+import type { Density, LoadingStage, Locale, NoteCode, ProfileData, ProfileStreamEvent, Theme } from "./types";
 
 const nf = new Intl.NumberFormat("zh-CN");
 const HISTORY_KEY = "github-neofetch:recent";
@@ -18,6 +18,15 @@ const translations = {
     usernamePlaceholder: "输入 GitHub 用户名",
     run: "运行",
     loading: "查询中...",
+    loadingProfile: "正在读取 GitHub 个人资料...",
+    generatingAscii: "正在生成 ASCII 头像...",
+    countingRepos: (count: number) => `正在统计 ${nf.format(count)} 个公开仓库...`,
+    finalizing: "正在整理终端资料卡...",
+    retry: "重试",
+    share: "分享",
+    shared: "已复制分享链接",
+    searchHint: "输入 GitHub 用户名；可使用上下方向键选择最近查询。",
+    avatarAlt: (login: string) => `${login} 的 GitHub 头像`,
     recent: "最近",
     clearRecent: "清空最近查询",
     theme: "主题",
@@ -64,6 +73,7 @@ const translations = {
     errors: {
       not_found: "没有找到这个 GitHub 用户。",
       invalid_username: "GitHub 用户名格式不正确。",
+      too_many_requests: "查询过于频繁，每个 IP 每分钟最多 20 次，请稍后重试。",
       rate_limited: "GitHub API 请求额度已用完，请稍后重试。",
       request_failed: "GitHub 数据请求失败，请稍后重试。"
     },
@@ -81,6 +91,15 @@ const translations = {
     usernamePlaceholder: "Enter a GitHub username",
     run: "Run",
     loading: "Loading...",
+    loadingProfile: "Reading the GitHub profile...",
+    generatingAscii: "Generating the ASCII avatar...",
+    countingRepos: (count: number) => `Aggregating ${nf.format(count)} public repositories...`,
+    finalizing: "Finalizing the terminal profile...",
+    retry: "Retry",
+    share: "Share",
+    shared: "Share link copied",
+    searchHint: "Enter a GitHub username; use the arrow keys to browse recent searches.",
+    avatarAlt: (login: string) => `${login}'s GitHub avatar`,
     recent: "Recent",
     clearRecent: "Clear recent searches",
     theme: "Theme",
@@ -127,6 +146,7 @@ const translations = {
     errors: {
       not_found: "GitHub user not found.",
       invalid_username: "Invalid GitHub username.",
+      too_many_requests: "Too many searches. Each IP is limited to 20 requests per minute.",
       rate_limited: "GitHub API rate limit exceeded. Please try again later.",
       request_failed: "GitHub request failed. Please try again later."
     },
@@ -164,6 +184,14 @@ function normalizeUrl(value: string) {
 
 function timeText(value: string, locale: Locale) {
   return new Date(value).toLocaleTimeString(locale === "zh" ? "zh-CN" : "en-US", { hour: "2-digit", minute: "2-digit" });
+}
+
+function stageText(stage: LoadingStage, repoCount: number | null, locale: Locale) {
+  const t = translations[locale];
+  if (stage === "ascii") return t.generatingAscii;
+  if (stage === "repos") return t.countingRepos(repoCount ?? 0);
+  if (stage === "finalizing") return t.finalizing;
+  return t.loadingProfile;
 }
 
 function plainText(data: ProfileData, locale: Locale) {
@@ -209,7 +237,10 @@ export default function Home() {
   const [recent, setRecent] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [copied, setCopied] = useState(false);
+  const [shared, setShared] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [loadingStage, setLoadingStage] = useState<LoadingStage>("profile");
+  const [loadingRepoCount, setLoadingRepoCount] = useState<number | null>(null);
   const [theme, setTheme] = useState<Theme>("dark");
   const [locale, setLocale] = useState<Locale>("zh");
   const [density, setDensity] = useState<Density>("standard");
@@ -218,6 +249,7 @@ export default function Home() {
   const lastLookup = useRef<{ key: string; at: number } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const terminalRef = useRef<HTMLElement | null>(null);
+  const errorRef = useRef<HTMLDivElement | null>(null);
   const t = translations[locale];
 
   useEffect(() => {
@@ -235,6 +267,7 @@ export default function Home() {
     setLocale(initialLocale);
     setDensity(initialDensity);
     document.documentElement.dataset.theme = initialTheme;
+    document.documentElement.lang = initialLocale === "zh" ? "zh-CN" : "en";
     hydrated.current = true;
     const initialUser = params.get("user");
     if (initialUser) void lookup(initialUser, false, initialDensity);
@@ -245,15 +278,20 @@ export default function Home() {
   useEffect(() => {
     if (!hydrated.current) return;
     document.documentElement.dataset.theme = theme;
+    document.documentElement.lang = locale === "zh" ? "zh-CN" : "en";
     localStorage.setItem(SETTINGS_KEY, JSON.stringify({ theme, locale, density }));
   }, [theme, locale, density]);
 
-  async function lookup(raw: string, updateUrl = true, requestedDensity = density) {
+  useEffect(() => {
+    if (errorCode) errorRef.current?.focus();
+  }, [errorCode]);
+
+  async function lookup(raw: string, updateUrl = true, requestedDensity = density, force = false) {
     const clean = raw.trim();
     if (!clean) return;
     const lookupKey = `${clean.toLowerCase()}:${requestedDensity}`;
     const now = Date.now();
-    if (lastLookup.current?.key === lookupKey && now - lastLookup.current.at < 1500) return;
+    if (!force && lastLookup.current?.key === lookupKey && now - lastLookup.current.at < 1500) return;
     lastLookup.current = { key: lookupKey, at: now };
     const currentRequest = ++requestId.current;
     abortRef.current?.abort();
@@ -261,24 +299,67 @@ export default function Home() {
     abortRef.current = controller;
     setUsername(clean);
     setLoading(true);
+    setLoadingStage("profile");
+    setLoadingRepoCount(null);
     setErrorCode(null);
     setCopied(false);
+    setShared(false);
+    setData((current) => current?.profile.login.toLowerCase() === clean.toLowerCase() ? current : null);
 
     try {
-      const response = await fetch(`/api/github/${encodeURIComponent(clean)}?density=${requestedDensity}`, { signal: controller.signal });
-      const payload = (await response.json()) as ProfileData & { code?: ErrorCode };
-      if (!response.ok) throw Object.assign(new Error("request failed"), { code: payload.code || "request_failed" });
+      const response = await fetch(`/api/github/${encodeURIComponent(clean)}?density=${requestedDensity}&stream=1`, { signal: controller.signal });
+      if (!response.ok) {
+        const payload = await response.json() as { code?: ErrorCode };
+        throw Object.assign(new Error("request failed"), { code: payload.code || "request_failed" });
+      }
+
+      let payload: ProfileData | null = null;
+      if (response.headers.get("content-type")?.includes("application/x-ndjson") && response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        const handleEvent = (event: ProfileStreamEvent) => {
+          if (currentRequest !== requestId.current) return;
+          if (event.type === "stage") {
+            setLoadingStage(event.stage);
+            setLoadingRepoCount(event.repoCount ?? null);
+          } else if (event.type === "partial") {
+            setData(event.data);
+          } else if (event.type === "complete") {
+            payload = event.data;
+            setData(event.data);
+          } else {
+            throw Object.assign(new Error(event.error), { code: event.code });
+          }
+        };
+
+        while (true) {
+          const { value, done } = await reader.read();
+          buffer += decoder.decode(value, { stream: !done });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) if (line.trim()) handleEvent(JSON.parse(line) as ProfileStreamEvent);
+          if (done) break;
+        }
+        if (buffer.trim()) handleEvent(JSON.parse(buffer) as ProfileStreamEvent);
+      } else {
+        payload = await response.json() as ProfileData;
+        setData(payload);
+      }
+
+      if (!payload) throw Object.assign(new Error("incomplete stream"), { code: "request_failed" });
+      const completedPayload = payload;
       if (currentRequest !== requestId.current) return;
-      setData(payload);
       setRecent((current) => {
-        const next = [payload.profile.login, ...current.filter((item) => item.toLowerCase() !== payload.profile.login.toLowerCase())].slice(0, 5);
+        const next = [completedPayload.profile.login, ...current.filter((item) => item.toLowerCase() !== completedPayload.profile.login.toLowerCase())].slice(0, 5);
         localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
         return next;
       });
       setHistoryIndex(-1);
       if (updateUrl && hydrated.current) {
         const url = new URL(window.location.href);
-        url.searchParams.set("user", payload.profile.login);
+        url.searchParams.set("user", completedPayload.profile.login);
         if (requestedDensity === "standard") url.searchParams.delete("density");
         else url.searchParams.set("density", requestedDensity);
         window.history.replaceState({}, "", url);
@@ -286,7 +367,6 @@ export default function Home() {
     } catch (reason) {
       if (reason instanceof DOMException && reason.name === "AbortError") return;
       if (currentRequest !== requestId.current) return;
-      setData(null);
       const code = typeof reason === "object" && reason && "code" in reason ? String(reason.code) : "request_failed";
       setErrorCode(code in t.errors ? code as ErrorCode : "request_failed");
     } finally {
@@ -328,6 +408,25 @@ export default function Home() {
     window.setTimeout(() => setCopied(false), 1800);
   }
 
+  async function shareResult() {
+    if (!data) return;
+    const shareUrl = new URL(`/u/${encodeURIComponent(data.profile.login)}`, window.location.origin);
+    if (data.asciiSize.density !== "standard") shareUrl.searchParams.set("density", data.asciiSize.density);
+    const shareData = {
+      title: `${data.profile.login}@github - GitHub Neofetch`,
+      text: `${data.profile.login} GitHub terminal profile`,
+      url: shareUrl.toString()
+    };
+    try {
+      if (navigator.share) await navigator.share(shareData);
+      else await navigator.clipboard.writeText(shareData.url);
+      setShared(true);
+      window.setTimeout(() => setShared(false), 1800);
+    } catch (reason) {
+      if (!(reason instanceof DOMException && reason.name === "AbortError")) throw reason;
+    }
+  }
+
   function downloadText() {
     if (!data) return;
     downloadBlob(new Blob([plainText(data, locale)], { type: "text/plain;charset=utf-8" }), `${data.profile.login}-github-neofetch.txt`);
@@ -366,7 +465,7 @@ export default function Home() {
           <span className={`status status-${status}`}><i />{status === "error" ? t.apiError : status === "partial" ? t.apiPartial : t.apiOnline}</span>
         </header>
 
-        <form className="search" onSubmit={submit}>
+        <form className="search" onSubmit={submit} aria-describedby="username-hint">
           <label htmlFor="username">github.com/</label>
           <input
             id="username"
@@ -377,9 +476,12 @@ export default function Home() {
             autoComplete="off"
             spellCheck={false}
             maxLength={39}
+            aria-invalid={Boolean(errorCode)}
+            aria-controls="profile-result"
           />
           <button type="submit" disabled={loading}>{loading ? t.loading : t.run}</button>
         </form>
+        <p id="username-hint" className="srOnly">{t.searchHint}</p>
 
         <div className="subbar">
           <nav className="recent" aria-label={t.recent}>
@@ -406,7 +508,7 @@ export default function Home() {
           </div>
         </div>
 
-        {errorCode && <div className="message error" role="alert"><b>error</b><span>{t.errors[errorCode]}</span></div>}
+        {errorCode && <div ref={errorRef} className="message error" role="alert" tabIndex={-1}><b>error</b><span>{t.errors[errorCode]}</span><button type="button" onClick={() => void lookup(username, true, density, true)}>{t.retry}</button></div>}
 
         {!data && !errorCode && (
           <section className="emptyState">
@@ -416,15 +518,16 @@ export default function Home() {
           </section>
         )}
 
-        {loading && !data && <div className="loading" aria-live="polite"><span />{t.aggregating}</div>}
+        {loading && <div className="loading" role="status" aria-live="polite" aria-atomic="true"><span aria-hidden="true" />{stageText(loadingStage, loadingRepoCount, locale)}</div>}
 
         {data && (
-          <article ref={terminalRef} className={`terminal density-${data.asciiSize.density} ${loading ? "refreshing" : ""}`} aria-live="polite">
+          <article id="profile-result" ref={terminalRef} className={`terminal density-${data.asciiSize.density} ${loading ? "refreshing" : ""}`} aria-busy={loading}>
             <div className="terminalChrome">
               <div className="windowDots" aria-hidden="true"><i /><i /><i /></div>
               <span>{data.profile.login} — github-neofetch</span>
               <div className="terminalActions" data-export-hide="true">
                 <button type="button" onClick={copyResult} title={copied ? t.copied : t.copy}>{copied ? <Check size={13} /> : <Copy size={13} />}<span>{copied ? t.copied : t.copy}</span></button>
+                <button type="button" onClick={shareResult} title={shared ? t.shared : t.share}>{shared ? <Check size={13} /> : <Share2 size={13} />}<span>{shared ? t.shared : t.share}</span></button>
                 <button type="button" onClick={downloadText} title={t.downloadTxt}><FileText size={13} /><span>TXT</span></button>
                 <button type="button" onClick={downloadImage} disabled={exporting} title={t.downloadPng}><Download size={13} /><span>{exporting ? t.exporting : "PNG"}</span></button>
               </div>
@@ -432,7 +535,9 @@ export default function Home() {
 
             <div className="terminalBody">
               <div className="visual">
-                <pre className="ascii" aria-label="GitHub avatar rendered as ASCII">{data.ascii}</pre>
+                {data.ascii
+                  ? <pre className="ascii" aria-label="GitHub avatar rendered as ASCII">{data.ascii}</pre>
+                  : <img className="avatarPreview" src={data.profile.avatarUrl} alt={t.avatarAlt(data.profile.login)} width={220} height={220} />}
                 <span className="avatarCaption">avatar · {data.asciiSize.width} × {data.asciiSize.height} · enhanced grayscale</span>
               </div>
 

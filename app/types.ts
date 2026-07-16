@@ -4,6 +4,8 @@ export type Theme = "dark" | "light" | "green";
 
 export type NoteCode = "repo_stats_unavailable" | "token_required" | "repos_truncated";
 
+export type LoadingStage = "profile" | "ascii" | "repos" | "finalizing";
+
 export type ProfileData = {
   profile: {
     login: string;
@@ -14,6 +16,7 @@ export type ProfileData = {
     email: string | null;
     blog: string | null;
     htmlUrl: string;
+    avatarUrl: string;
     followers: number;
     following: number;
     publicRepos: number;
@@ -42,3 +45,9 @@ export type ProfileData = {
   };
   notes: NoteCode[];
 };
+
+export type ProfileStreamEvent =
+  | { type: "stage"; stage: LoadingStage; repoCount?: number }
+  | { type: "partial"; data: ProfileData }
+  | { type: "complete"; data: ProfileData }
+  | { type: "error"; code: string; error: string };

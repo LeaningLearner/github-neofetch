@@ -1,6 +1,7 @@
 import sharp from "sharp";
-import type { Density, NoteCode, ProfileData } from "../../../types";
+import type { Density, NoteCode, ProfileData, ProfileStreamEvent } from "../../../types";
 import { calculateAccountAge, pixelsToAscii, summarizeLanguages } from "../../../lib/github-profile";
+import { checkRateLimit, getClientIp } from "../../../lib/rate-limit";
 
 export const runtime = "nodejs";
 
@@ -38,6 +39,21 @@ function errorResponse(code: string, error: string, status: number, cacheControl
     headers: {
       "Cache-Control": cacheControl,
       "Vercel-CDN-Cache-Control": cacheControl
+    }
+  });
+}
+
+function rateLimitResponse(retryAfter: number, limit: number) {
+  return Response.json({
+    code: "too_many_requests",
+    error: `请求过于频繁，每个 IP 每分钟最多 ${limit} 次。`
+  }, {
+    status: 429,
+    headers: {
+      "Cache-Control": "private, no-store",
+      "Retry-After": String(retryAfter),
+      "RateLimit-Limit": String(limit),
+      "RateLimit-Remaining": "0"
     }
   });
 }
@@ -115,12 +131,136 @@ async function avatarToAscii(url: string, width: number, height: number) {
   return pixelsToAscii(data, width, height);
 }
 
+function profileShell(user: GitHubUser, response: Response, density: Density): ProfileData {
+  const asciiSize = DENSITIES[density];
+  const remainingHeader = response.headers.get("x-ratelimit-remaining");
+  return {
+    profile: {
+      login: user.login, name: user.name, bio: user.bio, company: user.company,
+      location: user.location, email: user.email, blog: user.blog, htmlUrl: user.html_url,
+      avatarUrl: user.avatar_url, followers: user.followers, following: user.following,
+      publicRepos: user.public_repos, publicGists: user.public_gists, createdAt: user.created_at
+    },
+    stats: {
+      stars: null, forks: null, commitsLastYear: null, contributionsLastYear: null,
+      issuesLastYear: null, pullRequestsLastYear: null, sampledRepos: null, reposTruncated: false
+    },
+    languages: [],
+    accountAge: calculateAccountAge(user.created_at),
+    ascii: "",
+    asciiSize: { ...asciiSize, density },
+    meta: {
+      authenticated: Boolean(process.env.GITHUB_TOKEN),
+      rateLimitRemaining: remainingHeader !== null && Number.isFinite(Number(remainingHeader)) ? Number(remainingHeader) : null,
+      rateLimitResetAt: response.headers.get("x-ratelimit-reset")
+        ? new Date(Number(response.headers.get("x-ratelimit-reset")) * 1000).toISOString()
+        : null,
+      fetchedAt: new Date().toISOString()
+    },
+    notes: process.env.GITHUB_TOKEN ? [] : ["token_required"]
+  };
+}
+
+function completeProfile(
+  shell: ProfileData,
+  repoResult: Awaited<ReturnType<typeof getRepos>> | null,
+  contributions: Contributions | null,
+  ascii: string
+): ProfileData {
+  const notes: NoteCode[] = shell.notes.filter((note) => note === "token_required");
+  if (!repoResult) notes.push("repo_stats_unavailable");
+  if (repoResult?.truncated) notes.push("repos_truncated");
+  const repos = repoResult?.repos ?? [];
+
+  return {
+    ...shell,
+    stats: {
+      stars: repoResult ? repos.reduce((sum, repo) => sum + repo.stargazers_count, 0) : null,
+      forks: repoResult ? repos.reduce((sum, repo) => sum + repo.forks_count, 0) : null,
+      commitsLastYear: contributions?.commits ?? null,
+      contributionsLastYear: contributions?.total ?? null,
+      issuesLastYear: contributions?.issues ?? null,
+      pullRequestsLastYear: contributions?.pullRequests ?? null,
+      sampledRepos: repoResult ? repos.length : null,
+      reposTruncated: repoResult?.truncated ?? false
+    },
+    languages: summarizeLanguages(repos),
+    ascii,
+    meta: { ...shell.meta, fetchedAt: new Date().toISOString() },
+    notes
+  };
+}
+
+async function streamResponse(username: string, density: Density) {
+  let user: GitHubUser;
+  let githubResponse: Response;
+  try {
+    const result = await githubFetch<GitHubUser>(`${API}/users/${encodeURIComponent(username)}`);
+    user = result.data;
+    githubResponse = result.response;
+  } catch (reason) {
+    if (reason instanceof GitHubError) {
+      if (reason.status === 404) {
+        return errorResponse("not_found", "没有找到这个 GitHub 用户。", 404, "public, s-maxage=60, stale-while-revalidate=300");
+      }
+      if (reason.status === 403 || reason.status === 429) {
+        return errorResponse("rate_limited", "GitHub API 请求额度已用完，请配置 GITHUB_TOKEN 或稍后重试。", 429);
+      }
+    }
+    return errorResponse("request_failed", "GitHub 数据请求失败，请稍后重试。", 502);
+  }
+
+  const encoder = new TextEncoder();
+  const send = (controller: ReadableStreamDefaultController, event: ProfileStreamEvent) => {
+    controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+  };
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      try {
+        send(controller, { type: "stage", stage: "profile" });
+        const shell = profileShell(user, githubResponse, density);
+        send(controller, { type: "partial", data: shell });
+
+        const repoPromise = getRepos(user.login).catch(() => null);
+        const contributionsPromise = getContributions(user.login).catch(() => null);
+        const size = DENSITIES[density];
+        send(controller, { type: "stage", stage: "ascii" });
+        const ascii = await avatarToAscii(user.avatar_url, size.width, size.height).catch(() => "[ avatar unavailable ]");
+        send(controller, { type: "partial", data: { ...shell, ascii } });
+
+        send(controller, { type: "stage", stage: "repos", repoCount: user.public_repos });
+        const [repoResult, contributions] = await Promise.all([repoPromise, contributionsPromise]);
+        send(controller, { type: "stage", stage: "finalizing" });
+        send(controller, { type: "complete", data: completeProfile(shell, repoResult, contributions, ascii) });
+      } catch (reason) {
+        send(controller, { type: "error", code: "request_failed", error: reason instanceof Error ? reason.message : "GitHub 数据请求失败。" });
+      } finally {
+        controller.close();
+      }
+    }
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff"
+    }
+  });
+}
+
 export async function GET(request: Request, context: { params: Promise<{ username: string }> }) {
   const { username } = await context.params;
-  const requestedDensity = new URL(request.url).searchParams.get("density");
+  const url = new URL(request.url);
+  const requestedDensity = url.searchParams.get("density");
   const density: Density = requestedDensity === "compact" || requestedDensity === "detailed" ? requestedDensity : "standard";
   const asciiSize = DENSITIES[density];
   if (!USERNAME_RE.test(username)) return errorResponse("invalid_username", "GitHub 用户名格式不正确。", 400);
+
+  const rateLimit = checkRateLimit(`github-profile:${getClientIp(request)}`);
+  if (!rateLimit.allowed) return rateLimitResponse(rateLimit.retryAfter, rateLimit.limit);
+  if (url.searchParams.get("stream") === "1") return streamResponse(username, density);
 
   try {
     const { data: user, response } = await githubFetch<GitHubUser>(`${API}/users/${encodeURIComponent(username)}`);
@@ -130,44 +270,7 @@ export async function GET(request: Request, context: { params: Promise<{ usernam
       avatarToAscii(user.avatar_url, asciiSize.width, asciiSize.height).catch(() => "[ avatar unavailable ]")
     ]);
 
-    const notes: NoteCode[] = [];
-    if (!repoResult) notes.push("repo_stats_unavailable");
-    if (!process.env.GITHUB_TOKEN) notes.push("token_required");
-    if (repoResult?.truncated) notes.push("repos_truncated");
-    const repos = repoResult?.repos ?? [];
-
-    const remainingHeader = response.headers.get("x-ratelimit-remaining");
-    const result: ProfileData = {
-      profile: {
-        login: user.login, name: user.name, bio: user.bio, company: user.company,
-        location: user.location, email: user.email, blog: user.blog, htmlUrl: user.html_url,
-        followers: user.followers, following: user.following, publicRepos: user.public_repos,
-        publicGists: user.public_gists, createdAt: user.created_at
-      },
-      stats: {
-        stars: repoResult ? repos.reduce((sum, repo) => sum + repo.stargazers_count, 0) : null,
-        forks: repoResult ? repos.reduce((sum, repo) => sum + repo.forks_count, 0) : null,
-        commitsLastYear: contributions?.commits ?? null,
-        contributionsLastYear: contributions?.total ?? null,
-        issuesLastYear: contributions?.issues ?? null,
-        pullRequestsLastYear: contributions?.pullRequests ?? null,
-        sampledRepos: repoResult ? repos.length : null,
-        reposTruncated: repoResult?.truncated ?? false
-      },
-      languages: summarizeLanguages(repos),
-      accountAge: calculateAccountAge(user.created_at),
-      ascii,
-      asciiSize: { ...asciiSize, density },
-      meta: {
-        authenticated: Boolean(process.env.GITHUB_TOKEN),
-        rateLimitRemaining: remainingHeader !== null && Number.isFinite(Number(remainingHeader)) ? Number(remainingHeader) : null,
-        rateLimitResetAt: response.headers.get("x-ratelimit-reset")
-          ? new Date(Number(response.headers.get("x-ratelimit-reset")) * 1000).toISOString()
-          : null,
-        fetchedAt: new Date().toISOString()
-      },
-      notes
-    };
+    const result = completeProfile(profileShell(user, response, density), repoResult, contributions, ascii);
 
     return Response.json(result, { headers: { "Cache-Control": "public, s-maxage=900, stale-while-revalidate=3600" } });
   } catch (reason) {
