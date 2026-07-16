@@ -45,6 +45,27 @@ GITHUB_TOKEN=github_pat_xxx
 
 不要使用 `NEXT_PUBLIC_GITHUB_TOKEN`，否则 Token 会进入浏览器代码。建议使用只读的 fine-grained token。
 
+## GitHub API 限额
+
+GitHub Token 不会按查询次数“用完”，项目消耗的是 GitHub 按小时恢复的 API 请求额度：
+
+| 请求类型 | 每小时限额 |
+| --- | ---: |
+| 未认证 REST API | 60 次（按来源 IP 计算） |
+| 使用个人 Token 的 REST API | 5,000 次（按用户计算） |
+| 使用个人 Token 的 GraphQL API | 5,000 points（独立计算） |
+
+一次未命中缓存的查询通常会产生：
+
+- 1 次 REST 请求读取用户资料。
+- 每 100 个公开仓库约 1 次 REST 请求读取仓库列表，最多读取 10 页。
+- 配置 Token 时，额外执行 1 次 GraphQL 请求读取最近 12 个月贡献。
+- 1 次头像 CDN 下载，用于服务端生成 ASCII 图像；这不计入 REST API 核心额度。
+
+例如，不超过 100 个仓库的账号通常消耗 2 次 REST 请求；约 264 个仓库的账号通常消耗 4 次 REST 请求。线上所有访客共用服务端配置的 `GITHUB_TOKEN` 配额。
+
+完整查询结果缓存 15 分钟，GitHub REST 数据缓存 15 分钟，头像文件缓存 24 小时。同一用户名短时间内重复查询通常不会重复消耗完整的 GitHub API 请求。具体规则以 [GitHub REST API rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api) 和 [GitHub GraphQL API rate limits](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api) 为准。
+
 ## 数据说明
 
 - Stars / Forks 聚合用户拥有的公开仓库，最多读取 1000 个。
