@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GET } from "../../app/api/github/[username]/route";
 import type { ProfileData } from "../../app/types";
+import { resetRateLimits } from "../../app/lib/rate-limit";
 
 const USER = {
   login: "octocat",
@@ -22,8 +23,8 @@ const USER = {
 const REPO = { stargazers_count: 12, forks_count: 3, fork: false, language: "TypeScript" };
 const ONE_PIXEL_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
 
-function request(username = "octocat", density = "compact") {
-  return GET(new Request(`http://localhost/api/github/${username}?density=${density}`), {
+function request(username = "octocat", density = "compact", headers?: HeadersInit, stream = false) {
+  return GET(new Request(`http://localhost/api/github/${username}?density=${density}${stream ? "&stream=1" : ""}`, { headers }), {
     params: Promise.resolve({ username })
   });
 }
@@ -48,6 +49,7 @@ function mockFetch(userStatus = 200, avatarStatus = 200) {
 describe("GET /api/github/[username]", () => {
   beforeEach(() => {
     delete process.env.GITHUB_TOKEN;
+    resetRateLimits();
   });
 
   afterEach(() => {
@@ -62,6 +64,7 @@ describe("GET /api/github/[username]", () => {
 
     expect(response.status).toBe(200);
     expect(body.profile.login).toBe("octocat");
+    expect(body.profile.avatarUrl).toBe(USER.avatar_url);
     expect(body.stats).toMatchObject({ stars: 12, forks: 3, sampledRepos: 1 });
     expect(body.languages).toEqual([{ name: "TypeScript", repos: 1 }]);
     expect(body.asciiSize).toEqual({ width: 40, height: 22, density: "compact" });
@@ -92,5 +95,39 @@ describe("GET /api/github/[username]", () => {
     expect(response.status).toBe(200);
     expect(body.ascii).toBe("[ avatar unavailable ]");
     expect(body.profile.login).toBe("octocat");
+  });
+
+  it("limits each client IP to 20 origin requests per minute", async () => {
+    mockFetch();
+    const headers = { "x-forwarded-for": "203.0.113.10" };
+    for (let index = 0; index < 20; index += 1) {
+      expect((await request("octocat", "compact", headers)).status).toBe(200);
+    }
+
+    const response = await request("octocat", "compact", headers);
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBeTruthy();
+    expect(await response.json()).toMatchObject({ code: "too_many_requests" });
+  });
+
+  it("streams profile, ASCII and repository stages in order", async () => {
+    mockFetch();
+    const response = await request("octocat", "compact", { "x-forwarded-for": "203.0.113.11" }, true);
+    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line) as { type: string; stage?: string; data?: ProfileData });
+
+    expect(response.headers.get("content-type")).toContain("application/x-ndjson");
+    expect(events.filter((event) => event.type === "stage").map((event) => event.stage)).toEqual(["profile", "ascii", "repos", "finalizing"]);
+    expect(events.find((event) => event.type === "partial")?.data?.profile.login).toBe("octocat");
+    expect(events.find((event) => event.type === "partial")?.data).toMatchObject({ ascii: "", profile: { avatarUrl: USER.avatar_url } });
+    expect(events.at(-1)?.type).toBe("complete");
+    expect(events.at(-1)?.data?.stats.stars).toBe(12);
+  });
+
+  it("preserves HTTP 404 caching before a stream starts", async () => {
+    mockFetch(404);
+    const response = await request("missing-stream-user", "compact", { "x-forwarded-for": "203.0.113.12" }, true);
+    expect(response.status).toBe(404);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(response.headers.get("cache-control")).toContain("s-maxage=60");
   });
 });
