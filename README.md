@@ -4,7 +4,7 @@
 
 **在线体验：[github-neofetch.vercel.app](https://github-neofetch.vercel.app/)**
 
-[![GitHub Neofetch 在线页面截图](docs/github-neofetch-demo.png)](https://github-neofetch.vercel.app/?user=openai)
+[![GitHub Neofetch 在线页面截图](docs/github-neofetch-demo.png)](https://github-neofetch.vercel.app/?user=torvalds)
 
 ## 功能
 
@@ -26,7 +26,7 @@
 打开[在线页面](https://github-neofetch.vercel.app/)，输入 GitHub 用户名并点击“运行”。也可以通过查询参数直接分享指定用户：
 
 ```text
-https://github-neofetch.vercel.app/?user=openai
+https://github-neofetch.vercel.app/?user=torvalds
 ```
 
 查询后可使用资料卡右上角的操作按钮复制完整文本、下载 TXT 或导出双倍分辨率 PNG。页面顶部工具栏可切换主题、语言和 ASCII 清晰度；在用户名输入框中按上下方向键可选择最近查询。
