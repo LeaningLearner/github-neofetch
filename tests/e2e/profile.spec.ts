@@ -8,6 +8,7 @@ function fixture(density: Density): ProfileData {
     profile: {
       login: "torvalds", name: "Linus Torvalds", bio: null, company: "Linux Foundation",
       location: "Portland, OR", email: null, blog: null, htmlUrl: "https://github.com/torvalds",
+      avatarUrl: "https://avatars.githubusercontent.com/u/1024025?v=4",
       followers: 1000, following: 0, publicRepos: 12, publicGists: 0, createdAt: "2011-09-03T15:26:22Z"
     },
     stats: {
@@ -28,15 +29,25 @@ function fixture(density: Density): ProfileData {
 
 test("profile workflow is responsive and deduplicates rapid queries", async ({ page }) => {
   let apiRequests = 0;
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "share", {
+      configurable: true,
+      value: async (data: ShareData) => localStorage.setItem("e2e-shared-url", data.url || "")
+    });
+  });
   await page.route("**/api/github/**", async (route) => {
     apiRequests += 1;
     const densityParam = new URL(route.request().url()).searchParams.get("density");
     const density: Density = densityParam === "compact" || densityParam === "detailed" ? densityParam : "standard";
+    if (apiRequests === 1) await new Promise((resolve) => setTimeout(resolve, 600));
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fixture(density)) });
   });
 
   await page.goto("/?user=torvalds");
+  await expect(page.locator(".loading")).toContainText("正在读取 GitHub 个人资料");
   await expect(page.locator(".terminal")).toBeVisible();
+  await expect(page.locator("#username")).toHaveAttribute("aria-controls", "profile-result");
+  await expect(page.locator(".terminal img.avatarPreview")).toHaveCount(0);
   await expect(page.locator(".ascii")).toContainText("@");
   await expect(page.locator(".meta")).toContainText("重置于");
 
@@ -53,6 +64,8 @@ test("profile workflow is responsive and deduplicates rapid queries", async ({ p
   await page.getByTitle("ASCII density: 72×40").click();
   await expect(page.locator(".avatarCaption")).toContainText("72 × 40");
   await expect(page.locator(".ascii")).toHaveClass(/density|ascii/);
+  await page.getByTitle("Share").click();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("e2e-shared-url"))).toMatch(/\/u\/torvalds\?density=detailed$/);
 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   expect(overflow).toBe(false);
@@ -61,4 +74,73 @@ test("profile workflow is responsive and deduplicates rapid queries", async ({ p
   expect(terminalBox).not.toBeNull();
   expect(viewport).not.toBeNull();
   expect(terminalBox!.x + terminalBox!.width).toBeLessThanOrEqual(viewport!.width + 1);
+});
+
+test("shared profile exposes social metadata and opens the interactive result", async ({ page, request }) => {
+  const sharedResponse = await request.get("/u/torvalds");
+  const html = await sharedResponse.text();
+  expect(sharedResponse.ok()).toBe(true);
+  expect(html).toContain("torvalds@github - GitHub Neofetch");
+  expect(html).toContain("/u/torvalds/opengraph-image");
+  const imageResponse = await request.get("/u/torvalds/opengraph-image");
+  expect(imageResponse.ok()).toBe(true);
+  expect(imageResponse.headers()["content-type"]).toContain("image/png");
+  expect((await imageResponse.body()).byteLength).toBeGreaterThan(10_000);
+
+  await page.route("**/api/github/**", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fixture("standard")) });
+  });
+  await page.goto("/u/torvalds");
+  await expect(page).toHaveURL(/\?user=torvalds/);
+  await expect(page.locator(".terminal")).toBeVisible();
+});
+
+test("an accessible error can be retried immediately", async ({ page }) => {
+  let requests = 0;
+  await page.route("**/api/github/**", async (route) => {
+    requests += 1;
+    if (requests === 1) {
+      await route.fulfill({ status: 429, contentType: "application/json", body: JSON.stringify({ code: "too_many_requests" }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fixture("standard")) });
+  });
+
+  await page.goto("/");
+  await page.locator("#username").fill("torvalds");
+  await page.getByRole("button", { name: "运行", exact: true }).click();
+  const alert = page.locator(".message.error");
+  await expect(alert).toContainText("每个 IP 每分钟最多 20 次");
+  await expect(alert).toBeFocused();
+  await alert.getByRole("button", { name: "重试" }).click();
+  await expect(page.locator(".terminal")).toBeVisible();
+  expect(requests).toBe(2);
+});
+
+test("share falls back to the clipboard when native sharing fails", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "share", {
+      configurable: true,
+      value: async () => { throw new Error("native share unavailable"); }
+    });
+    Object.defineProperty(navigator, "canShare", { configurable: true, value: () => true });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => localStorage.setItem("e2e-copied-share-url", value)
+      }
+    });
+  });
+  await page.route("**/api/github/**", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fixture("standard")) });
+  });
+
+  await page.goto("/?user=torvalds");
+  await expect(page.locator(".terminal")).toBeVisible();
+  await page.getByTitle("分享").click();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("e2e-copied-share-url"))).toMatch(/\/u\/torvalds$/);
+  await expect(page.getByTitle("分享链接已复制")).toBeVisible();
+  expect(pageErrors).toEqual([]);
 });

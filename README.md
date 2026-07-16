@@ -18,6 +18,10 @@
 - 提供 `40×22`、`56×30`、`72×40` 三档 ASCII 清晰度
 - 支持查询历史、方向键选择、历史清空和分享链接
 - 显示 GitHub API 剩余额度及重置时间
+- 单次请求渐进显示个人资料、ASCII 头像和仓库统计
+- 按 IP 每分钟最多 20 次源站查询，降低公开 Token 被滥用的风险
+- 为每个账号生成 `/u/<username>` 分享链接和 Open Graph 预览图
+- 提供错误重试、键盘焦点、屏幕阅读器播报和减少动画支持
 - 适配桌面端和移动端布局
 - 部分统计失败时仍可展示基础资料
 
@@ -26,10 +30,12 @@
 打开[在线页面](https://github-neofetch.vercel.app/)，输入 GitHub 用户名并点击“运行”。也可以通过查询参数直接分享指定用户：
 
 ```text
-https://github-neofetch.vercel.app/?user=torvalds
+https://github-neofetch.vercel.app/u/torvalds
 ```
 
 查询后可使用资料卡右上角的操作按钮复制完整文本、下载 TXT 或导出双倍分辨率 PNG。页面顶部工具栏可切换主题、语言和 ASCII 清晰度；在用户名输入框中按上下方向键可选择最近查询。
+
+应用在单次 HTTP 请求中依次返回个人资料、ASCII 头像和仓库统计，不会因为渐进显示额外增加一次完整查询。源站还提供实例级的 IP 限流，每个 IP 每分钟最多 20 次；如需跨 Vercel 实例的严格全局限流，应再接入 Vercel Firewall、KV 或 Redis。
 
 ## 本地运行
 
