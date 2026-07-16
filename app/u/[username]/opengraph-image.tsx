@@ -34,7 +34,7 @@ export default async function OpenGraphImage({ params }: { params: Promise<{ use
       </div>
       <div style={{ display: "flex", flex: 1, alignItems: "center", border: "2px solid #3d464e", borderRadius: 8, marginTop: 30, padding: "48px 62px", background: "#0c0f11" }}>
         {avatar
-          ? <img src={avatar} alt="" width="230" height="230" style={{ borderRadius: 6, filter: "grayscale(1)", border: "2px solid #2b3137" }} />
+          ? <img src={avatar} alt="" width={230} height={230} style={{ borderRadius: 6, filter: "grayscale(1)", border: "2px solid #2b3137" }} />
           : <div style={{ display: "flex", width: 230, height: 230, alignItems: "center", justifyContent: "center", borderRadius: 6, border: "2px solid #2b3137", color: "#81b8cf", fontSize: 112 }}>{login.charAt(0).toUpperCase()}</div>}
         <div style={{ display: "flex", flexDirection: "column", marginLeft: 62, flex: 1 }}>
           <div style={{ display: "flex", alignItems: "baseline", fontSize: 54, fontWeight: 700 }}>

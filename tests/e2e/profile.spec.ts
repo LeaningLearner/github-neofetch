@@ -47,6 +47,7 @@ test("profile workflow is responsive and deduplicates rapid queries", async ({ p
   await expect(page.locator(".loading")).toContainText("正在读取 GitHub 个人资料");
   await expect(page.locator(".terminal")).toBeVisible();
   await expect(page.locator("#username")).toHaveAttribute("aria-controls", "profile-result");
+  await expect(page.locator(".terminal img.avatarPreview")).toHaveCount(0);
   await expect(page.locator(".ascii")).toContainText("@");
   await expect(page.locator(".meta")).toContainText("重置于");
 

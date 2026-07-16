@@ -161,7 +161,9 @@ main { min-height: 100vh; padding: 28px 18px 52px; }
 
 .terminalBody { display: grid; grid-template-columns: minmax(350px, .9fr) minmax(500px, 1.3fr); gap: clamp(28px, 5vw, 64px); padding: clamp(26px, 4.2vw, 52px); }
 .visual { align-self: center; min-width: 0; }
-.avatarPreview { display: block; width: min(220px, 70vw); height: auto; margin: 0 auto; border: 1px solid var(--border-strong); border-radius: 4px; filter: grayscale(1); }
+.asciiPlaceholder { display: grid; width: min(320px, 75vw); aspect-ratio: 56 / 30; place-items: center; margin: 0 auto; border: 1px dashed var(--border-strong); border-radius: 4px; color: var(--caption); }
+.asciiPlaceholder span { grid-area: 1 / 1; color: var(--green); font-size: 30px; opacity: .34; }
+.asciiPlaceholder i { grid-area: 1 / 1; margin-top: 58px; color: var(--muted); font-size: 9px; font-style: normal; text-transform: uppercase; }
 .ascii { margin: 0; color: var(--ascii); font-size: 9px; line-height: .9; letter-spacing: 0; white-space: pre; text-shadow: 0 0 10px color-mix(in srgb, var(--ascii) 10%, transparent); }
 .density-compact .ascii { font-size: 11.5px; }
 .density-detailed .ascii { font-size: 7.1px; }

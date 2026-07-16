@@ -26,7 +26,6 @@ const translations = {
     share: "分享",
     shared: "已复制分享链接",
     searchHint: "输入 GitHub 用户名；可使用上下方向键选择最近查询。",
-    avatarAlt: (login: string) => `${login} 的 GitHub 头像`,
     recent: "最近",
     clearRecent: "清空最近查询",
     theme: "主题",
@@ -99,7 +98,6 @@ const translations = {
     share: "Share",
     shared: "Share link copied",
     searchHint: "Enter a GitHub username; use the arrow keys to browse recent searches.",
-    avatarAlt: (login: string) => `${login}'s GitHub avatar`,
     recent: "Recent",
     clearRecent: "Clear recent searches",
     theme: "Theme",
@@ -537,7 +535,7 @@ export default function Home() {
               <div className="visual">
                 {data.ascii
                   ? <pre className="ascii" aria-label="GitHub avatar rendered as ASCII">{data.ascii}</pre>
-                  : <img className="avatarPreview" src={data.profile.avatarUrl} alt={t.avatarAlt(data.profile.login)} width={220} height={220} />}
+                  : <div className="asciiPlaceholder" aria-hidden="true"><span>$</span><i>generating ascii...</i></div>}
                 <span className="avatarCaption">avatar · {data.asciiSize.width} × {data.asciiSize.height} · enhanced grayscale</span>
               </div>
 
