@@ -43,6 +43,17 @@ npm run dev
 
 打开 `http://localhost:3000`。不配置 Token 也能查询基础资料，但 GitHub 匿名 REST API 的请求额度较低，且不会显示贡献统计。
 
+## 测试
+
+```bash
+npm run typecheck
+npm run test:unit
+npm run test:e2e
+npm run build
+```
+
+单元与 API 测试使用 Vitest；桌面端和移动端流程使用 Playwright，并通过本地模拟 API 避免消耗 GitHub 请求额度。`main` 分支和 Pull Request 会自动运行完整 GitHub Actions CI。
+
 ## GitHub Token
 
 在 `.env.local` 中设置服务端环境变量：

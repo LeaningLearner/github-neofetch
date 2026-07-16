@@ -1,5 +1,6 @@
 import sharp from "sharp";
 import type { Density, NoteCode, ProfileData } from "../../../types";
+import { calculateAccountAge, pixelsToAscii, summarizeLanguages } from "../../../lib/github-profile";
 
 export const runtime = "nodejs";
 
@@ -29,6 +30,16 @@ type Contributions = { commits: number; total: number; issues: number; pullReque
 
 class GitHubError extends Error {
   constructor(public status: number, message: string) { super(message); }
+}
+
+function errorResponse(code: string, error: string, status: number, cacheControl = "private, no-store") {
+  return Response.json({ code, error }, {
+    status,
+    headers: {
+      "Cache-Control": cacheControl,
+      "Vercel-CDN-Cache-Control": cacheControl
+    }
+  });
 }
 
 function githubHeaders() {
@@ -92,7 +103,6 @@ async function avatarToAscii(url: string, width: number, height: number) {
   if (!response.ok) throw new Error("avatar fetch failed");
   // Terminal glyphs are roughly twice as tall as they are wide. Stretching the
   // square source into this pixel ratio restores its proportions when rendered.
-  const ramp = "@%#*+=-:. ";
   const { data } = await sharp(Buffer.from(await response.arrayBuffer()))
     .flatten({ background: "#ffffff" })
     .resize(width, height, { fit: "fill", kernel: sharp.kernel.lanczos3 })
@@ -102,41 +112,7 @@ async function avatarToAscii(url: string, width: number, height: number) {
     .raw()
     .toBuffer({ resolveWithObject: true });
 
-  const rows: string[] = [];
-  for (let y = 0; y < height; y += 1) {
-    let row = "";
-    for (let x = 0; x < width; x += 1) {
-      const value = data[y * width + x] ?? 255;
-      const normalized = value / 255;
-      const contrasted = Math.max(0, Math.min(1, 0.5 + (normalized - 0.5) * 1.06));
-      row += ramp[Math.min(ramp.length - 1, Math.floor(contrasted * ramp.length))];
-    }
-    rows.push(row.trimEnd());
-  }
-  return rows.join("\n");
-}
-
-function accountAge(createdAt: string) {
-  const created = new Date(createdAt);
-  const now = new Date();
-  let years = now.getUTCFullYear() - created.getUTCFullYear();
-  let months = now.getUTCMonth() - created.getUTCMonth();
-  let days = now.getUTCDate() - created.getUTCDate();
-  if (days < 0) {
-    months -= 1;
-    days += new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0)).getUTCDate();
-  }
-  if (months < 0) { years -= 1; months += 12; }
-  return { years: Math.max(0, years), months: Math.max(0, months), days: Math.max(0, days) };
-}
-
-function topLanguages(repos: GitHubRepo[]) {
-  const counts = new Map<string, number>();
-  for (const repo of repos) {
-    if (!repo.fork && repo.language) counts.set(repo.language, (counts.get(repo.language) ?? 0) + 1);
-  }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 6)
-    .map(([name, repos]) => ({ name, repos }));
+  return pixelsToAscii(data, width, height);
 }
 
 export async function GET(request: Request, context: { params: Promise<{ username: string }> }) {
@@ -144,7 +120,7 @@ export async function GET(request: Request, context: { params: Promise<{ usernam
   const requestedDensity = new URL(request.url).searchParams.get("density");
   const density: Density = requestedDensity === "compact" || requestedDensity === "detailed" ? requestedDensity : "standard";
   const asciiSize = DENSITIES[density];
-  if (!USERNAME_RE.test(username)) return Response.json({ code: "invalid_username", error: "GitHub 用户名格式不正确。" }, { status: 400 });
+  if (!USERNAME_RE.test(username)) return errorResponse("invalid_username", "GitHub 用户名格式不正确。", 400);
 
   try {
     const { data: user, response } = await githubFetch<GitHubUser>(`${API}/users/${encodeURIComponent(username)}`);
@@ -178,8 +154,8 @@ export async function GET(request: Request, context: { params: Promise<{ usernam
         sampledRepos: repoResult ? repos.length : null,
         reposTruncated: repoResult?.truncated ?? false
       },
-      languages: topLanguages(repos),
-      accountAge: accountAge(user.created_at),
+      languages: summarizeLanguages(repos),
+      accountAge: calculateAccountAge(user.created_at),
       ascii,
       asciiSize: { ...asciiSize, density },
       meta: {
@@ -196,9 +172,13 @@ export async function GET(request: Request, context: { params: Promise<{ usernam
     return Response.json(result, { headers: { "Cache-Control": "public, s-maxage=900, stale-while-revalidate=3600" } });
   } catch (reason) {
     if (reason instanceof GitHubError) {
-      if (reason.status === 404) return Response.json({ code: "not_found", error: "没有找到这个 GitHub 用户。" }, { status: 404 });
-      if (reason.status === 403 || reason.status === 429) return Response.json({ code: "rate_limited", error: "GitHub API 请求额度已用完，请配置 GITHUB_TOKEN 或稍后重试。" }, { status: 429 });
+      if (reason.status === 404) {
+        return errorResponse("not_found", "没有找到这个 GitHub 用户。", 404, "public, s-maxage=60, stale-while-revalidate=300");
+      }
+      if (reason.status === 403 || reason.status === 429) {
+        return errorResponse("rate_limited", "GitHub API 请求额度已用完，请配置 GITHUB_TOKEN 或稍后重试。", 429);
+      }
     }
-    return Response.json({ code: "request_failed", error: "GitHub 数据请求失败，请稍后重试。" }, { status: 502 });
+    return errorResponse("request_failed", "GitHub 数据请求失败，请稍后重试。", 502);
   }
 }

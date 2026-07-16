@@ -1,0 +1,39 @@
+name: Bug 报告
+description: 报告可复现的功能或显示问题
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: 感谢反馈。请不要在 Issue 中粘贴 GitHub Token 或其他密钥。
+  - type: input
+    id: username
+    attributes:
+      label: 查询的 GitHub 用户名
+      placeholder: torvalds
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请列出能够稳定重现问题的步骤。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 浏览器与设备
+      placeholder: Edge 126 / Windows 11
+    validations:
+      required: true

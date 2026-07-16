@@ -215,6 +215,7 @@ export default function Home() {
   const [density, setDensity] = useState<Density>("standard");
   const hydrated = useRef(false);
   const requestId = useRef(0);
+  const lastLookup = useRef<{ key: string; at: number } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const terminalRef = useRef<HTMLElement | null>(null);
   const t = translations[locale];
@@ -250,6 +251,10 @@ export default function Home() {
   async function lookup(raw: string, updateUrl = true, requestedDensity = density) {
     const clean = raw.trim();
     if (!clean) return;
+    const lookupKey = `${clean.toLowerCase()}:${requestedDensity}`;
+    const now = Date.now();
+    if (lastLookup.current?.key === lookupKey && now - lastLookup.current.at < 1500) return;
+    lastLookup.current = { key: lookupKey, at: now };
     const currentRequest = ++requestId.current;
     abortRef.current?.abort();
     const controller = new AbortController();
