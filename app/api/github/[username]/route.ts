@@ -1,5 +1,5 @@
 import sharp from "sharp";
-import type { ProfileData } from "../../../types";
+import type { Density, NoteCode, ProfileData } from "../../../types";
 
 export const runtime = "nodejs";
 
@@ -8,6 +8,11 @@ const GRAPHQL = "https://api.github.com/graphql";
 const USERNAME_RE = /^(?!-)[A-Za-z0-9-]{1,39}(?<!-)$/;
 const REVALIDATE_SECONDS = 900;
 const MAX_REPO_PAGES = 10;
+const DENSITIES: Record<Density, { width: number; height: number }> = {
+  compact: { width: 40, height: 22 },
+  standard: { width: 56, height: 30 },
+  detailed: { width: 72, height: 40 }
+};
 
 type GitHubUser = {
   login: string; name: string | null; bio: string | null; company: string | null;
@@ -82,14 +87,12 @@ async function getContributions(username: string): Promise<Contributions | null>
   };
 }
 
-async function avatarToAscii(url: string) {
+async function avatarToAscii(url: string, width: number, height: number) {
   const response = await fetch(url, { headers: { "User-Agent": "github-neofetch" }, next: { revalidate: 86400 } });
   if (!response.ok) throw new Error("avatar fetch failed");
   // Terminal glyphs are roughly twice as tall as they are wide. Stretching the
   // square source into this pixel ratio restores its proportions when rendered.
   const ramp = "@%#*+=-:. ";
-  const width = 56;
-  const height = 30;
   const { data } = await sharp(Buffer.from(await response.arrayBuffer()))
     .flatten({ background: "#ffffff" })
     .resize(width, height, { fit: "fill", kernel: sharp.kernel.lanczos3 })
@@ -124,7 +127,7 @@ function accountAge(createdAt: string) {
     days += new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0)).getUTCDate();
   }
   if (months < 0) { years -= 1; months += 12; }
-  return `${Math.max(0, years)} 年 ${Math.max(0, months)} 个月 ${Math.max(0, days)} 天`;
+  return { years: Math.max(0, years), months: Math.max(0, months), days: Math.max(0, days) };
 }
 
 function topLanguages(repos: GitHubRepo[]) {
@@ -136,22 +139,25 @@ function topLanguages(repos: GitHubRepo[]) {
     .map(([name, repos]) => ({ name, repos }));
 }
 
-export async function GET(_: Request, context: { params: Promise<{ username: string }> }) {
+export async function GET(request: Request, context: { params: Promise<{ username: string }> }) {
   const { username } = await context.params;
-  if (!USERNAME_RE.test(username)) return Response.json({ error: "GitHub 用户名格式不正确。" }, { status: 400 });
+  const requestedDensity = new URL(request.url).searchParams.get("density");
+  const density: Density = requestedDensity === "compact" || requestedDensity === "detailed" ? requestedDensity : "standard";
+  const asciiSize = DENSITIES[density];
+  if (!USERNAME_RE.test(username)) return Response.json({ code: "invalid_username", error: "GitHub 用户名格式不正确。" }, { status: 400 });
 
   try {
     const { data: user, response } = await githubFetch<GitHubUser>(`${API}/users/${encodeURIComponent(username)}`);
     const [repoResult, contributions, ascii] = await Promise.all([
       getRepos(user.login).catch(() => null),
       getContributions(user.login).catch(() => null),
-      avatarToAscii(user.avatar_url).catch(() => "[ avatar unavailable ]")
+      avatarToAscii(user.avatar_url, asciiSize.width, asciiSize.height).catch(() => "[ avatar unavailable ]")
     ]);
 
-    const notes: string[] = [];
-    if (!repoResult) notes.push("仓库统计暂时不可用，个人资料仍可正常查看。");
-    if (!process.env.GITHUB_TOKEN) notes.push("配置 GITHUB_TOKEN 后可显示最近 12 个月贡献并提升请求额度。");
-    if (repoResult?.truncated) notes.push("仓库统计最多读取 1000 个公开仓库，当前结果可能是下限。");
+    const notes: NoteCode[] = [];
+    if (!repoResult) notes.push("repo_stats_unavailable");
+    if (!process.env.GITHUB_TOKEN) notes.push("token_required");
+    if (repoResult?.truncated) notes.push("repos_truncated");
     const repos = repoResult?.repos ?? [];
 
     const remainingHeader = response.headers.get("x-ratelimit-remaining");
@@ -175,9 +181,13 @@ export async function GET(_: Request, context: { params: Promise<{ username: str
       languages: topLanguages(repos),
       accountAge: accountAge(user.created_at),
       ascii,
+      asciiSize: { ...asciiSize, density },
       meta: {
         authenticated: Boolean(process.env.GITHUB_TOKEN),
         rateLimitRemaining: remainingHeader !== null && Number.isFinite(Number(remainingHeader)) ? Number(remainingHeader) : null,
+        rateLimitResetAt: response.headers.get("x-ratelimit-reset")
+          ? new Date(Number(response.headers.get("x-ratelimit-reset")) * 1000).toISOString()
+          : null,
         fetchedAt: new Date().toISOString()
       },
       notes
@@ -186,9 +196,9 @@ export async function GET(_: Request, context: { params: Promise<{ username: str
     return Response.json(result, { headers: { "Cache-Control": "public, s-maxage=900, stale-while-revalidate=3600" } });
   } catch (reason) {
     if (reason instanceof GitHubError) {
-      if (reason.status === 404) return Response.json({ error: "没有找到这个 GitHub 用户。" }, { status: 404 });
-      if (reason.status === 403 || reason.status === 429) return Response.json({ error: "GitHub API 请求额度已用完，请配置 GITHUB_TOKEN 或稍后重试。" }, { status: 429 });
+      if (reason.status === 404) return Response.json({ code: "not_found", error: "没有找到这个 GitHub 用户。" }, { status: 404 });
+      if (reason.status === 403 || reason.status === 429) return Response.json({ code: "rate_limited", error: "GitHub API 请求额度已用完，请配置 GITHUB_TOKEN 或稍后重试。" }, { status: 429 });
     }
-    return Response.json({ error: "GitHub 数据请求失败，请稍后重试。" }, { status: 502 });
+    return Response.json({ code: "request_failed", error: "GitHub 数据请求失败，请稍后重试。" }, { status: 502 });
   }
 }

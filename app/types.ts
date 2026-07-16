@@ -1,3 +1,9 @@
+export type Density = "compact" | "standard" | "detailed";
+export type Locale = "zh" | "en";
+export type Theme = "dark" | "light" | "green";
+
+export type NoteCode = "repo_stats_unavailable" | "token_required" | "repos_truncated";
+
 export type ProfileData = {
   profile: {
     login: string;
@@ -25,12 +31,14 @@ export type ProfileData = {
     reposTruncated: boolean;
   };
   languages: Array<{ name: string; repos: number }>;
-  accountAge: string;
+  accountAge: { years: number; months: number; days: number };
   ascii: string;
+  asciiSize: { width: number; height: number; density: Density };
   meta: {
     authenticated: boolean;
     rateLimitRemaining: number | null;
+    rateLimitResetAt: string | null;
     fetchedAt: string;
   };
-  notes: string[];
+  notes: NoteCode[];
 };

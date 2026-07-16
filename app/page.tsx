@@ -1,12 +1,146 @@
 "use client";
 
-import { FormEvent, ReactNode, useEffect, useRef, useState } from "react";
-import type { ProfileData } from "./types";
+import { FormEvent, KeyboardEvent, ReactNode, useEffect, useRef, useState } from "react";
+import { toPng } from "html-to-image";
+import { Check, Copy, Download, FileText, Moon, Sun, TerminalSquare, Trash2 } from "lucide-react";
+import type { Density, Locale, NoteCode, ProfileData, Theme } from "./types";
 
 const nf = new Intl.NumberFormat("zh-CN");
 const HISTORY_KEY = "github-neofetch:recent";
+const SETTINGS_KEY = "github-neofetch:settings";
 
-function displayNumber(value: number | null, fallback = "暂不可用") {
+const translations = {
+  zh: {
+    subtitle: "公开资料终端",
+    apiOnline: "GitHub API 正常",
+    apiPartial: "部分数据不可用",
+    apiError: "GitHub API 异常",
+    usernamePlaceholder: "输入 GitHub 用户名",
+    run: "运行",
+    loading: "查询中...",
+    recent: "最近",
+    clearRecent: "清空最近查询",
+    theme: "主题",
+    density: "ASCII 清晰度",
+    language: "语言",
+    themes: { dark: "深色", light: "浅色", green: "经典绿" },
+    densities: { compact: "40×22", standard: "56×30", detailed: "72×40" },
+    emptyCommand: "github-neofetch --user <username>",
+    emptyTitle: "读取一个公开 GitHub 账号",
+    emptyHint: "试试 torvalds、sindresorhus 或你的用户名",
+    aggregating: "正在聚合公开资料和仓库统计...",
+    copy: "复制",
+    copied: "已复制",
+    downloadPng: "下载 PNG",
+    downloadTxt: "下载 TXT",
+    exporting: "生成中...",
+    profile: "资料",
+    name: "姓名",
+    bio: "简介",
+    company: "公司",
+    location: "位置",
+    accountAge: "账号年龄",
+    languages: "语言",
+    primaryRepos: "主要仓库",
+    contact: "联系",
+    github: "GitHub",
+    website: "网站",
+    email: "邮箱",
+    stats: "GitHub 统计",
+    publicRepos: "公开仓库",
+    stars: "Stars",
+    forks: "Forks",
+    followers: "关注者",
+    commits: "提交 · 12 个月",
+    contributions: "贡献 · 12 个月",
+    unavailable: "暂不可用",
+    tokenRequired: "需配置 Token",
+    authenticated: "已认证",
+    anonymous: "匿名",
+    rateLeft: "剩余额度",
+    rateReset: "重置于",
+    updated: "更新于",
+    age: (years: number, months: number, days: number) => `${years} 年 ${months} 个月 ${days} 天`,
+    errors: {
+      not_found: "没有找到这个 GitHub 用户。",
+      invalid_username: "GitHub 用户名格式不正确。",
+      rate_limited: "GitHub API 请求额度已用完，请稍后重试。",
+      request_failed: "GitHub 数据请求失败，请稍后重试。"
+    },
+    notes: {
+      repo_stats_unavailable: "仓库统计暂时不可用，个人资料仍可正常查看。",
+      token_required: "配置 GITHUB_TOKEN 后可显示最近 12 个月贡献并提升请求额度。",
+      repos_truncated: "仓库统计最多读取 1000 个公开仓库，当前结果可能是下限。"
+    }
+  },
+  en: {
+    subtitle: "public profile inspector",
+    apiOnline: "GitHub API online",
+    apiPartial: "Partial data unavailable",
+    apiError: "GitHub API error",
+    usernamePlaceholder: "Enter a GitHub username",
+    run: "Run",
+    loading: "Loading...",
+    recent: "Recent",
+    clearRecent: "Clear recent searches",
+    theme: "Theme",
+    density: "ASCII density",
+    language: "Language",
+    themes: { dark: "Dark", light: "Light", green: "Classic green" },
+    densities: { compact: "40×22", standard: "56×30", detailed: "72×40" },
+    emptyCommand: "github-neofetch --user <username>",
+    emptyTitle: "Inspect a public GitHub profile",
+    emptyHint: "Try torvalds, sindresorhus, or your username",
+    aggregating: "Aggregating public profile and repository stats...",
+    copy: "Copy",
+    copied: "Copied",
+    downloadPng: "Download PNG",
+    downloadTxt: "Download TXT",
+    exporting: "Exporting...",
+    profile: "Profile",
+    name: "Name",
+    bio: "Bio",
+    company: "Company",
+    location: "Location",
+    accountAge: "Account age",
+    languages: "Languages",
+    primaryRepos: "Primary repos",
+    contact: "Contact",
+    github: "GitHub",
+    website: "Website",
+    email: "Email",
+    stats: "GitHub Stats",
+    publicRepos: "Public repos",
+    stars: "Stars",
+    forks: "Forks",
+    followers: "Followers",
+    commits: "Commits · 12 mo",
+    contributions: "Contributions · 12 mo",
+    unavailable: "Unavailable",
+    tokenRequired: "Token required",
+    authenticated: "Authenticated",
+    anonymous: "Anonymous",
+    rateLeft: "Rate limit",
+    rateReset: "Resets at",
+    updated: "Updated",
+    age: (years: number, months: number, days: number) => `${years}y ${months}m ${days}d`,
+    errors: {
+      not_found: "GitHub user not found.",
+      invalid_username: "Invalid GitHub username.",
+      rate_limited: "GitHub API rate limit exceeded. Please try again later.",
+      request_failed: "GitHub request failed. Please try again later."
+    },
+    notes: {
+      repo_stats_unavailable: "Repository stats are temporarily unavailable; profile data is still available.",
+      token_required: "Configure GITHUB_TOKEN to show 12-month contributions and increase the rate limit.",
+      repos_truncated: "Repository stats are capped at 1,000 public repositories and may be a lower bound."
+    }
+  }
+} as const;
+
+type ErrorCode = keyof typeof translations.zh.errors;
+
+function displayNumber(value: number | null, fallback: string) {
   return value === null ? fallback : nf.format(value);
 }
 
@@ -15,95 +149,143 @@ function Row({ label, value, href }: { label: string; value: ReactNode; href?: s
     <div className="row">
       <span className="label">{label}</span>
       <span className="dots" aria-hidden="true" />
-      {href ? (
-        <a className="value link" href={href} target="_blank" rel="noreferrer">
-          {value}
-        </a>
-      ) : (
-        <span className="value">{value}</span>
-      )}
+      {href ? <a className="value link" href={href} target="_blank" rel="noreferrer">{value}</a> : <span className="value">{value}</span>}
     </div>
   );
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section>
-      <h2>{title}</h2>
-      {children}
-    </section>
-  );
+  return <section><h2>{title}</h2>{children}</section>;
 }
 
 function normalizeUrl(value: string) {
   return /^https?:\/\//i.test(value) ? value : `https://${value}`;
 }
 
-function plainText(data: ProfileData) {
+function timeText(value: string, locale: Locale) {
+  return new Date(value).toLocaleTimeString(locale === "zh" ? "zh-CN" : "en-US", { hour: "2-digit", minute: "2-digit" });
+}
+
+function plainText(data: ProfileData, locale: Locale) {
+  const t = translations[locale];
   const languages = data.languages.map((item) => `${item.name} (${item.repos})`).join(", ") || "-";
+  const age = t.age(data.accountAge.years, data.accountAge.months, data.accountAge.days);
+  const fallback = data.meta.authenticated ? t.unavailable : t.tokenRequired;
   return [
+    data.ascii,
+    "",
     `${data.profile.login}@github`,
     "------------------------------",
-    `Name: ${data.profile.name || data.profile.login}`,
-    `Bio: ${data.profile.bio || "-"}`,
-    `Location: ${data.profile.location || "-"}`,
-    `Account age: ${data.accountAge}`,
-    `Languages: ${languages}`,
-    `Public repos: ${nf.format(data.profile.publicRepos)}`,
-    `Stars: ${displayNumber(data.stats.stars)}`,
-    `Followers: ${nf.format(data.profile.followers)}`,
-    `Contributions (12 mo): ${displayNumber(data.stats.contributionsLastYear)}`,
+    `${t.name}: ${data.profile.name || data.profile.login}`,
+    `${t.bio}: ${data.profile.bio || "-"}`,
+    `${t.company}: ${data.profile.company || "-"}`,
+    `${t.location}: ${data.profile.location || "-"}`,
+    `${t.accountAge}: ${age}`,
+    `${t.languages}: ${languages}`,
+    `${t.publicRepos}: ${nf.format(data.profile.publicRepos)}`,
+    `${t.stars}: ${displayNumber(data.stats.stars, t.unavailable)}`,
+    `${t.forks}: ${displayNumber(data.stats.forks, t.unavailable)}`,
+    `${t.followers}: ${nf.format(data.profile.followers)}`,
+    `${t.commits}: ${displayNumber(data.stats.commitsLastYear, fallback)}`,
+    `${t.contributions}: ${displayNumber(data.stats.contributionsLastYear, fallback)}`,
     `https://github.com/${data.profile.login}`
   ].join("\n");
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 export default function Home() {
   const [username, setUsername] = useState("");
   const [data, setData] = useState<ProfileData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [errorCode, setErrorCode] = useState<ErrorCode | null>(null);
   const [recent, setRecent] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
   const [copied, setCopied] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [theme, setTheme] = useState<Theme>("dark");
+  const [locale, setLocale] = useState<Locale>("zh");
+  const [density, setDensity] = useState<Density>("standard");
   const hydrated = useRef(false);
+  const requestId = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+  const terminalRef = useRef<HTMLElement | null>(null);
+  const t = translations[locale];
 
   useEffect(() => {
-    const saved = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]") as string[];
-    setRecent(Array.isArray(saved) ? saved.slice(0, 5) : []);
-    const initial = new URLSearchParams(window.location.search).get("user");
+    const savedRecent = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]") as string[];
+    setRecent(Array.isArray(savedRecent) ? savedRecent.slice(0, 5) : []);
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") as Partial<{ theme: Theme; locale: Locale; density: Density }>;
+    const params = new URLSearchParams(window.location.search);
+    const queryDensity = params.get("density");
+    const initialTheme: Theme = saved.theme === "light" || saved.theme === "green" ? saved.theme : "dark";
+    const initialLocale: Locale = saved.locale === "en" ? "en" : "zh";
+    const initialDensity: Density = queryDensity === "compact" || queryDensity === "detailed"
+      ? queryDensity
+      : saved.density === "compact" || saved.density === "detailed" ? saved.density : "standard";
+    setTheme(initialTheme);
+    setLocale(initialLocale);
+    setDensity(initialDensity);
+    document.documentElement.dataset.theme = initialTheme;
     hydrated.current = true;
-    if (initial) void lookup(initial, false);
-  // The initial lookup intentionally runs once after hydration.
+    const initialUser = params.get("user");
+    if (initialUser) void lookup(initialUser, false, initialDensity);
+  // Initial hydration and URL lookup run once.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function lookup(raw: string, updateUrl = true) {
-    const clean = raw.trim();
-    if (!clean || loading) return;
+  useEffect(() => {
+    if (!hydrated.current) return;
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ theme, locale, density }));
+  }, [theme, locale, density]);
 
+  async function lookup(raw: string, updateUrl = true, requestedDensity = density) {
+    const clean = raw.trim();
+    if (!clean) return;
+    const currentRequest = ++requestId.current;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setUsername(clean);
     setLoading(true);
-    setError("");
+    setErrorCode(null);
     setCopied(false);
 
     try {
-      const response = await fetch(`/api/github/${encodeURIComponent(clean)}`);
-      const payload = (await response.json()) as ProfileData & { error?: string };
-      if (!response.ok) throw new Error(payload.error || "查询失败，请稍后重试。");
+      const response = await fetch(`/api/github/${encodeURIComponent(clean)}?density=${requestedDensity}`, { signal: controller.signal });
+      const payload = (await response.json()) as ProfileData & { code?: ErrorCode };
+      if (!response.ok) throw Object.assign(new Error("request failed"), { code: payload.code || "request_failed" });
+      if (currentRequest !== requestId.current) return;
       setData(payload);
-
-      const nextRecent = [payload.profile.login, ...recent.filter((item) => item !== payload.profile.login)].slice(0, 5);
-      setRecent(nextRecent);
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(nextRecent));
+      setRecent((current) => {
+        const next = [payload.profile.login, ...current.filter((item) => item.toLowerCase() !== payload.profile.login.toLowerCase())].slice(0, 5);
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+        return next;
+      });
+      setHistoryIndex(-1);
       if (updateUrl && hydrated.current) {
         const url = new URL(window.location.href);
         url.searchParams.set("user", payload.profile.login);
+        if (requestedDensity === "standard") url.searchParams.delete("density");
+        else url.searchParams.set("density", requestedDensity);
         window.history.replaceState({}, "", url);
       }
     } catch (reason) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      if (currentRequest !== requestId.current) return;
       setData(null);
-      setError(reason instanceof Error ? reason.message : "查询失败，请稍后重试。");
+      const code = typeof reason === "object" && reason && "code" in reason ? String(reason.code) : "request_failed";
+      setErrorCode(code in t.errors ? code as ErrorCode : "request_failed");
     } finally {
-      setLoading(false);
+      if (currentRequest === requestId.current) setLoading(false);
     }
   }
 
@@ -112,15 +294,61 @@ export default function Home() {
     void lookup(username);
   }
 
+  function handleHistoryKey(event: KeyboardEvent<HTMLInputElement>) {
+    if (!recent.length || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+    event.preventDefault();
+    const next = event.key === "ArrowUp"
+      ? Math.min(historyIndex + 1, recent.length - 1)
+      : Math.max(historyIndex - 1, -1);
+    setHistoryIndex(next);
+    if (next >= 0) setUsername(recent[next]);
+  }
+
+  function clearRecent() {
+    setRecent([]);
+    setHistoryIndex(-1);
+    localStorage.removeItem(HISTORY_KEY);
+  }
+
+  function changeDensity(next: Density) {
+    if (next === density) return;
+    setDensity(next);
+    if (data) void lookup(data.profile.login, true, next);
+  }
+
   async function copyResult() {
     if (!data) return;
-    await navigator.clipboard.writeText(plainText(data));
+    await navigator.clipboard.writeText(plainText(data, locale));
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
   }
 
+  function downloadText() {
+    if (!data) return;
+    downloadBlob(new Blob([plainText(data, locale)], { type: "text/plain;charset=utf-8" }), `${data.profile.login}-github-neofetch.txt`);
+  }
+
+  async function downloadImage() {
+    if (!data || !terminalRef.current || exporting) return;
+    setExporting(true);
+    try {
+      const background = getComputedStyle(terminalRef.current).backgroundColor;
+      const dataUrl = await toPng(terminalRef.current, {
+        cacheBust: true,
+        pixelRatio: 2,
+        backgroundColor: background,
+        filter: (node) => !(node instanceof HTMLElement && node.dataset.exportHide === "true")
+      });
+      const blob = await (await fetch(dataUrl)).blob();
+      downloadBlob(blob, `${data.profile.login}-github-neofetch.png`);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   const languageText = data?.languages.map((item) => `${item.name} (${item.repos})`).join(", ") || "-";
-  const contributionFallback = data?.meta.authenticated ? "暂不可用" : "需配置 Token";
+  const contributionFallback = data?.meta.authenticated ? t.unavailable : t.tokenRequired;
+  const status = errorCode ? "error" : data?.notes.includes("repo_stats_unavailable") ? "partial" : "online";
 
   return (
     <main>
@@ -128,12 +356,9 @@ export default function Home() {
         <header className="topbar">
           <div className="brand">
             <span className="brandMark" aria-hidden="true">$</span>
-            <div>
-              <strong>github-neofetch</strong>
-              <span>public profile inspector</span>
-            </div>
+            <div><strong>github-neofetch</strong><span>{t.subtitle}</span></div>
           </div>
-          <span className="status"><i /> GitHub API</span>
+          <span className={`status status-${status}`}><i />{status === "error" ? t.apiError : status === "partial" ? t.apiPartial : t.apiOnline}</span>
         </header>
 
         <form className="search" onSubmit={submit}>
@@ -141,99 +366,104 @@ export default function Home() {
           <input
             id="username"
             value={username}
-            onChange={(event) => setUsername(event.target.value)}
-            placeholder="输入 GitHub 用户名"
+            onChange={(event) => { setUsername(event.target.value); setHistoryIndex(-1); }}
+            onKeyDown={handleHistoryKey}
+            placeholder={t.usernamePlaceholder}
             autoComplete="off"
             spellCheck={false}
             maxLength={39}
           />
-          <button type="submit" disabled={loading}>{loading ? "查询中..." : "运行"}</button>
+          <button type="submit" disabled={loading}>{loading ? t.loading : t.run}</button>
         </form>
 
-        {recent.length > 0 && (
-          <nav className="recent" aria-label="最近查询">
-            <span>最近</span>
-            {recent.map((item) => (
-              <button key={item} type="button" onClick={() => void lookup(item)}>{item}</button>
-            ))}
+        <div className="subbar">
+          <nav className="recent" aria-label={t.recent}>
+            <span>{t.recent}</span>
+            {recent.map((item) => <button key={item} type="button" onClick={() => void lookup(item)}>{item}</button>)}
+            {recent.length > 0 && <button className="iconButton" type="button" onClick={clearRecent} title={t.clearRecent} aria-label={t.clearRecent}><Trash2 size={13} /></button>}
           </nav>
-        )}
 
-        {error && <div className="message error" role="alert"><b>error</b><span>{error}</span></div>}
-
-        {!data && !error && (
-          <section className="emptyState">
-            <p><span>$</span> github-neofetch --user &lt;username&gt;</p>
-            <strong>读取一个公开 GitHub 账号</strong>
-            <small>试试 torvalds、sindresorhus 或你的用户名</small>
-            <div className="examples">
-              {["torvalds", "sindresorhus", "yyx990803"].map((item) => (
-                <button key={item} type="button" onClick={() => void lookup(item)}>{item}</button>
+          <div className="preferences">
+            <div className="controlGroup" aria-label={t.theme}>
+              <button type="button" aria-pressed={theme === "dark"} onClick={() => setTheme("dark")} title={t.themes.dark}><Moon size={13} /></button>
+              <button type="button" aria-pressed={theme === "light"} onClick={() => setTheme("light")} title={t.themes.light}><Sun size={13} /></button>
+              <button type="button" aria-pressed={theme === "green"} onClick={() => setTheme("green")} title={t.themes.green}><TerminalSquare size={13} /></button>
+            </div>
+            <div className="controlGroup densityControl" aria-label={t.density}>
+              {(["compact", "standard", "detailed"] as Density[]).map((item) => (
+                <button key={item} type="button" aria-pressed={density === item} onClick={() => changeDensity(item)} title={`${t.density}: ${t.densities[item]}`}>{t.densities[item]}</button>
               ))}
             </div>
+            <div className="controlGroup" aria-label={t.language}>
+              <button type="button" aria-pressed={locale === "zh"} onClick={() => setLocale("zh")}>中</button>
+              <button type="button" aria-pressed={locale === "en"} onClick={() => setLocale("en")}>EN</button>
+            </div>
+          </div>
+        </div>
+
+        {errorCode && <div className="message error" role="alert"><b>error</b><span>{t.errors[errorCode]}</span></div>}
+
+        {!data && !errorCode && (
+          <section className="emptyState">
+            <p><span>$</span> {t.emptyCommand}</p>
+            <strong>{t.emptyTitle}</strong><small>{t.emptyHint}</small>
+            <div className="examples">{["torvalds", "sindresorhus", "yyx990803"].map((item) => <button key={item} type="button" onClick={() => void lookup(item)}>{item}</button>)}</div>
           </section>
         )}
 
-        {loading && !data && <div className="loading" aria-live="polite"><span /> 正在聚合公开资料和仓库统计...</div>}
+        {loading && !data && <div className="loading" aria-live="polite"><span />{t.aggregating}</div>}
 
         {data && (
-          <article className={`terminal ${loading ? "refreshing" : ""}`} aria-live="polite">
+          <article ref={terminalRef} className={`terminal density-${data.asciiSize.density} ${loading ? "refreshing" : ""}`} aria-live="polite">
             <div className="terminalChrome">
               <div className="windowDots" aria-hidden="true"><i /><i /><i /></div>
               <span>{data.profile.login} — github-neofetch</span>
-              <button type="button" onClick={copyResult}>{copied ? "已复制" : "复制结果"}</button>
+              <div className="terminalActions" data-export-hide="true">
+                <button type="button" onClick={copyResult} title={copied ? t.copied : t.copy}>{copied ? <Check size={13} /> : <Copy size={13} />}<span>{copied ? t.copied : t.copy}</span></button>
+                <button type="button" onClick={downloadText} title={t.downloadTxt}><FileText size={13} /><span>TXT</span></button>
+                <button type="button" onClick={downloadImage} disabled={exporting} title={t.downloadPng}><Download size={13} /><span>{exporting ? t.exporting : "PNG"}</span></button>
+              </div>
             </div>
 
             <div className="terminalBody">
               <div className="visual">
-                <pre className="ascii" aria-label="由 GitHub 头像生成的 ASCII 图像">{data.ascii}</pre>
-                <span className="avatarCaption">avatar · 56 x 30 · enhanced grayscale</span>
+                <pre className="ascii" aria-label="GitHub avatar rendered as ASCII">{data.ascii}</pre>
+                <span className="avatarCaption">avatar · {data.asciiSize.width} × {data.asciiSize.height} · enhanced grayscale</span>
               </div>
 
               <div className="info">
-                <header className="identity">
-                  <span>{data.profile.login}</span><b>@</b><span>github</span>
-                </header>
+                <header className="identity"><span>{data.profile.login}</span><b>@</b><span>github</span></header>
                 <div className="rule" />
-
-                <Section title="Profile">
-                  <Row label="Name" value={data.profile.name || data.profile.login} />
-                  <Row label="Bio" value={data.profile.bio || "-"} />
-                  <Row label="Company" value={data.profile.company || "-"} />
-                  <Row label="Location" value={data.profile.location || "-"} />
-                  <Row label="Account age" value={data.accountAge} />
+                <Section title={t.profile}>
+                  <Row label={t.name} value={data.profile.name || data.profile.login} />
+                  <Row label={t.bio} value={data.profile.bio || "-"} />
+                  <Row label={t.company} value={data.profile.company || "-"} />
+                  <Row label={t.location} value={data.profile.location || "-"} />
+                  <Row label={t.accountAge} value={t.age(data.accountAge.years, data.accountAge.months, data.accountAge.days)} />
                 </Section>
-
-                <Section title="Languages">
-                  <Row label="Primary repos" value={languageText} />
+                <Section title={t.languages}><Row label={t.primaryRepos} value={languageText} /></Section>
+                <Section title={t.contact}>
+                  <Row label={t.github} value={`github.com/${data.profile.login}`} href={data.profile.htmlUrl} />
+                  <Row label={t.website} value={data.profile.blog || "-"} href={data.profile.blog ? normalizeUrl(data.profile.blog) : undefined} />
+                  <Row label={t.email} value={data.profile.email || "-"} />
                 </Section>
-
-                <Section title="Contact">
-                  <Row label="GitHub" value={`github.com/${data.profile.login}`} href={data.profile.htmlUrl} />
-                  <Row label="Website" value={data.profile.blog || "-"} href={data.profile.blog ? normalizeUrl(data.profile.blog) : undefined} />
-                  <Row label="Email" value={data.profile.email || "-"} />
+                <Section title={t.stats}>
+                  <Row label={t.publicRepos} value={nf.format(data.profile.publicRepos)} />
+                  <Row label={t.stars} value={displayNumber(data.stats.stars, t.unavailable)} />
+                  <Row label={t.forks} value={displayNumber(data.stats.forks, t.unavailable)} />
+                  <Row label={t.followers} value={nf.format(data.profile.followers)} />
+                  <Row label={t.commits} value={displayNumber(data.stats.commitsLastYear, contributionFallback)} />
+                  <Row label={t.contributions} value={displayNumber(data.stats.contributionsLastYear, contributionFallback)} />
                 </Section>
-
-                <Section title="GitHub Stats">
-                  <Row label="Public repos" value={nf.format(data.profile.publicRepos)} />
-                  <Row label="Stars" value={displayNumber(data.stats.stars)} />
-                  <Row label="Forks" value={displayNumber(data.stats.forks)} />
-                  <Row label="Followers" value={nf.format(data.profile.followers)} />
-                  <Row label="Commits · 12 mo" value={displayNumber(data.stats.commitsLastYear, contributionFallback)} />
-                  <Row label="Contributions · 12 mo" value={displayNumber(data.stats.contributionsLastYear, contributionFallback)} />
-                </Section>
-
                 <footer className="meta">
-                  <span>{data.meta.authenticated ? "authenticated" : "anonymous"}</span>
-                  {data.meta.rateLimitRemaining !== null && <span>rate limit: {nf.format(data.meta.rateLimitRemaining)} left</span>}
-                  <span>updated {new Date(data.meta.fetchedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span>
+                  <span>{data.meta.authenticated ? t.authenticated : t.anonymous}</span>
+                  {data.meta.rateLimitRemaining !== null && <span>{t.rateLeft}: {nf.format(data.meta.rateLimitRemaining)}</span>}
+                  {data.meta.rateLimitResetAt && <span>{t.rateReset} {timeText(data.meta.rateLimitResetAt, locale)}</span>}
+                  <span>{t.updated} {timeText(data.meta.fetchedAt, locale)}</span>
                 </footer>
               </div>
             </div>
-
-            {data.notes.length > 0 && (
-              <div className="notes">{data.notes.map((note) => <p key={note}># {note}</p>)}</div>
-            )}
+            {data.notes.length > 0 && <div className="notes">{data.notes.map((note: NoteCode) => <p key={note}># {t.notes[note]}</p>)}</div>}
           </article>
         )}
       </div>
